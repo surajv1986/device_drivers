@@ -25,8 +25,8 @@
 #define RD_VALUE _IOR('a', 'b', uint8_t *)
 
 /* Function Prototypes */
-//static int adxl_read(struct device *, unsigned char);
-//static int adxl_write(struct device *, unsigned char, unsigned char);
+static int adxl_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos);
+static int adxl_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos);
 int adxl_open(struct inode *, struct file *);
 int adxl_release(struct inode *inode, struct file *filp);
 static long adxl_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
@@ -47,6 +47,7 @@ struct adxl345_dev {
 	struct i2c_client *client;
 	struct input_dev *input;
 	struct mutex mutex;
+	unsigned char *data;
 	struct axis_triple saved;
        	int current_pointer;
 	bool disabled;
@@ -57,8 +58,8 @@ struct adxl345_dev {
 /* file operations structure */
 struct file_operations adxl_fops = {
 	.owner = THIS_MODULE,
-//	.read = adxl_read,
-//	.write = adxl_write,
+	.read = adxl_read,
+	.write = adxl_write,
 	.open = adxl_open,
 	.unlocked_ioctl = adxl_ioctl,
 	.release = adxl_release	
@@ -117,8 +118,6 @@ static int adxl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
 	struct adxl345_dev *dev = NULL;
 
-	
-	
 	int err, devno;
 	
 	/* Obtain a range of minor numbers, starting from 0, to work with */
@@ -178,6 +177,87 @@ static long adxl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		
 	}
 	return 0;
+}
+static int adxl_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
+{
+	int _reg_addr;
+	uint8_t reg_addr[2];
+	struct i2c_msg msg[2];
+	struct adxl345_dev *dev = filp->private_data;
+	ssize_t retval = 0;
+	
+	if(mutex_lock_killable(&dev->mutex))
+		return -EINTR;
+
+	/* Enter Critical Section */		
+	_reg_addr = dev->current_pointer;
+	reg_addr[0] = (uint8_t) (_reg_addr >> 8);
+	reg_addr[1] = (uint8_t) (_reg_addr & 0xFF);
+
+	msg[0].addr = dev->client->addr;
+	msg[0].flags = 0;
+	/* Address is  bytes in  length */
+	msg[0].len = 2;
+	msg[0].buf = reg_addr;
+	msg[1].addr = dev->client->addr;
+	/* Read Operation is indicated */	
+	msg[1].flags = I2C_M_RD;	
+	msg[1].buf = dev->data;
+	/* Read 2 bytes of data from i2c slave and store in dev->data */
+	if(i2c_transfer(dev->client->adapter, msg, 2) < 0) {
+		pr_err("i2c transfer failed\n");
+		return -1;
+	}
+	/* copy recvd i2c data to user buffer */
+	if(copy_to_user(buf, dev->data, count) != 0) {
+		return -EFAULT;
+		goto end_read;
+	}
+	retval = count;
+	return retval;
+end_read:
+	mutex_unlock(&dev->mutex);
+	return retval;	
+
+}
+static int adxl_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
+{
+	int _reg_addr;
+	unsigned char tmp[4];
+	struct i2c_msg msg[0];
+	struct adxl345_dev *dev = filp->private_data;
+	ssize_t retval = 0;
+	uint8_t len;
+	
+	if(mutex_lock_killable(&dev->mutex))
+		return -EINTR;
+
+	/* Enter Critical Section */
+	/* Copy data to be written to i2c device from user buffer and store in dev-    >data*/
+	if(copy_from_user(dev->data, buf, count) != 0) {
+		retval = -EFAULT;
+		goto end_write;	
+	}
+	_reg_addr = dev->current_pointer;	
+	tmp[0] = (uint8_t)(_reg_addr >> 8);
+	tmp[1] = (uint8_t)(_reg_addr & 0xFF);
+	memcpy(tmp + 2, &(dev->data[0]), 1);
+	/* Address is  bytes in  length */
+	msg[0].len = 2;
+	msg[0].addr = dev->client->addr;
+	/* Write Operation is indicated */	
+	msg[0].flags = 0;	
+	msg[0].buf = tmp;
+	/* Write 1 byte of msg to i2c device */
+	len = i2c_transfer(dev->client->adapter, msg, 1);
+	if (len < 0) {
+		pr_err("i2c transfer failed\n");
+		return -1;	
+	}	
+	return len;
+end_write:
+	mutex_unlock(&dev->mutex);
+	return retval;
 }
 #if 0
 static int adxl_read(struct device *dev, unsigned char reg)
