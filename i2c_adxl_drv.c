@@ -12,27 +12,31 @@
 #include <linux/i2c.h>
 #include <linux/delay.h>
 #include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/of.h>
 #include <linux/types.h>
 #include <linux/pm.h>
-#include <asm/uaccess.h>
-
+#include <linux/ioctl.h>
 
 #define ADXL_DEVICE_NAME "adxl_i2c"
 #define ADXL_CLASS "adxl-class "
 #define SIZE_TRIPLE_AXIS (32*3)
+#define WR_VALUE _IOW('a', 'a', uint8_t *)
+#define RD_VALUE _IOR('a', 'b', uint8_t *)
 
 /* Function Prototypes */
 //static int adxl_read(struct device *, unsigned char);
 //static int adxl_write(struct device *, unsigned char, unsigned char);
 int adxl_open(struct inode *, struct file *);
 int adxl_release(struct inode *inode, struct file *filp);
+static long adxl_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 
 static unsigned int adxl_major = 0;
 //static unsigned int minor = 0;
 static struct class *adxl_class = NULL;
+struct device *dev = NULL;
 dev_t dev_num;
-
+uint8_t value = 0;
 
 struct axis_triple {
 	int x;
@@ -56,6 +60,7 @@ struct file_operations adxl_fops = {
 //	.read = adxl_read,
 //	.write = adxl_write,
 	.open = adxl_open,
+	.unlocked_ioctl = adxl_ioctl,
 	.release = adxl_release	
 };
 static const struct of_device_id adxl345_ids[] = {
@@ -141,6 +146,39 @@ static int adxl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	return 0;
 }
 
+/* ioctl code for i2c read/write */
+static long adxl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	uint8_t reg;
+	int data_recvd;
+	int ret;
+	
+	struct i2c_client *client = to_i2c_client(dev);
+
+	switch(cmd) {
+		case WR_VALUE:
+				ret = copy_from_user(&value, (uint8_t*)arg, sizeof(value));
+				if(ret != 0) {
+					pr_err("copy from user failed %d", ret);
+					return -EFAULT;	
+				}
+				/* obtain 8 bit register address from lsb */
+				reg = value >> 8;
+				i2c_smbus_write_byte_data(client, reg, value);
+				break;
+		case RD_VALUE:
+				reg = value >> 8;
+				data_recvd = i2c_smbus_read_byte_data(client, reg);
+				ret = copy_to_user((uint8_t*)arg, &data_recvd, sizeof(data_recvd));
+				if(ret != 0) {
+					pr_err("copy to user failed %d", ret);
+					return -EFAULT;	
+				}
+				break;
+		
+	}
+	return 0;
+}
 #if 0
 static int adxl_read(struct device *dev, unsigned char reg)
 {
