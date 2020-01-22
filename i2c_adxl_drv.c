@@ -17,19 +17,28 @@
 #include <linux/types.h>
 #include <linux/pm.h>
 #include <linux/ioctl.h>
+#include <linux/interrupt.h>
+#include <linux/gpio.h>
+#include <linux/workqueue.h>
 
 #define ADXL_DEVICE_NAME "adxl_i2c"
 #define ADXL_CLASS "adxl-class "
 #define SIZE_TRIPLE_AXIS (32*3)
 #define WR_VALUE _IOW('a', 'a', uint8_t *)
 #define RD_VALUE _IOR('a', 'b', uint8_t *)
+/* Choose the interrupt pin as GPIO 19 i.e pin 35 on rpi 3 */
+#define GPIO_ANY_GPIO 19
+#define GPIO_ANY_GPIO_DESC "Some gpio pin description"
+#define GPIO_ANY_GPIO_DEVICE_DESC "some_device"
 
 /* Function Prototypes */
 static int adxl_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos);
 static int adxl_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos);
+void i2c_do_tasklet(struct work_struct *work);
 int adxl_open(struct inode *, struct file *);
 int adxl_release(struct inode *inode, struct file *filp);
 static long adxl_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+
 
 static unsigned int adxl_major = 0;
 //static unsigned int minor = 0;
@@ -37,6 +46,10 @@ static struct class *adxl_class = NULL;
 struct device *dev = NULL;
 dev_t dev_num;
 uint8_t value = 0;
+/* Interrupt Variable */
+short int irq_any_gpio;
+static struct work_struct i2c_wq;
+
 
 struct axis_triple {
 	int x;
@@ -139,7 +152,7 @@ static int adxl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	err = cdev_add(&dev->cdev, devno, 1);
 	if(err)
 		printk(KERN_NOTICE "Error %d adding adxl_dev \n", err);
-
+	INIT_WORK(&i2c_wq, i2c_do_tasklet);
 	i2c_set_clientdata(client, dev);
 
 	return 0;
@@ -305,6 +318,57 @@ static struct i2c_driver adxl345_i2c_driver = {
 	.id_table = adxl345_id,
 	
 };
+
+void i2c_do_tasklet(struct work_struct *work)
+{
+	unsigned char reg;
+	struct file *filp;
+	struct i2c_client *client = to_i2c_client(dev);
+
+	struct adxl345_dev *dev = filp->private_data;
+	reg = dev->client->addr;
+	i2c_smbus_read_byte_data(client, reg);
+}
+
+/* Interrupt Handling section */
+/* IRQ handler - fired on GPIO 17 interrupt- Falling Edge */
+static irqreturn_t r_irq_handler(int irq, void *dev_id, struct pt_regs *regs)
+{
+	unsigned long flags;
+
+	/* Schedule the Bottom Half */
+	schedule_work(&i2c_wq);
+
+	return IRQ_HANDLED;	
+}
+/* Module to configure interrupt */
+void r_int_config(void)
+{
+	if (gpio_request(GPIO_ANY_GPIO, GPIO_ANY_GPIO_DESC)) {
+		printk("GPIO request failure %s\n", GPIO_ANY_GPIO_DESC);
+		return;	
+	}
+	/* Obtain the irq number for our desired interrupt gpio pin */
+	if ( (irq_any_gpio = gpio_to_irq(GPIO_ANY_GPIO)) < 0) {
+		printk("GPIO to IRQ mapping failure %s\n", GPIO_ANY_GPIO_DESC);
+		return;
+	}	
+	
+	printk(KERN_NOTICE "Mapped int %d\n", irq_any_gpio);
+	/* Configure irq handler to Trigger on Falling Edge */	
+	if (request_irq(irq_any_gpio, (irq_handler_t) r_irq_handler, IRQF_TRIGGER_FALLING, GPIO_ANY_GPIO_DESC, GPIO_ANY_GPIO_DEVICE_DESC )) {
+		printk("Irq Request failure \n");
+		return;
+	}
+	return;	
+}
+/* Module to release interrupt resources configured */
+void r_int_release(void) 
+{
+	free_irq(irq_any_gpio, GPIO_ANY_GPIO_DEVICE_DESC);
+	gpio_free(GPIO_ANY_GPIO);
+	
+}
 
 
 MODULE_DEVICE_TABLE(i2c, adxl345_id);
