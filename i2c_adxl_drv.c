@@ -37,7 +37,6 @@ static int adxl_write(struct file *filp, const char __user *buf, size_t count, l
 void i2c_do_tasklet(struct work_struct *work);
 int adxl_open(struct inode *, struct file *);
 int adxl_release(struct inode *inode, struct file *filp);
-static long adxl_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 
 
 static unsigned int adxl_major = 0;
@@ -74,7 +73,6 @@ struct file_operations adxl_fops = {
 	.read = adxl_read,
 	.write = adxl_write,
 	.open = adxl_open,
-	.unlocked_ioctl = adxl_ioctl,
 	.release = adxl_release	
 };
 static const struct of_device_id adxl345_ids[] = {
@@ -115,8 +113,9 @@ int adxl_open(struct inode *inode, struct file *filp)
 
 int adxl_release(struct inode *inode, struct file *filp)
 {
-	struct adxl345_dev *dev;
+	struct adxl345_dev *dev = NULL;
 	dev = filp->private_data;
+
 
 	if (dev != NULL) {
 		kfree(dev);
@@ -158,39 +157,6 @@ static int adxl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	return 0;
 }
 
-/* ioctl code for i2c read/write */
-static long adxl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
-{
-	uint8_t reg;
-	int data_recvd;
-	int ret;
-	
-	struct i2c_client *client = to_i2c_client(dev);
-
-	switch(cmd) {
-		case WR_VALUE:
-				ret = copy_from_user(&value, (uint8_t*)arg, sizeof(value));
-				if(ret != 0) {
-					pr_err("copy from user failed %d", ret);
-					return -EFAULT;	
-				}
-				/* obtain 8 bit register address from lsb */
-				reg = value >> 8;
-				i2c_smbus_write_byte_data(client, reg, value);
-				break;
-		case RD_VALUE:
-				reg = value >> 8;
-				data_recvd = i2c_smbus_read_byte_data(client, reg);
-				ret = copy_to_user((uint8_t*)arg, &data_recvd, sizeof(data_recvd));
-				if(ret != 0) {
-					pr_err("copy to user failed %d", ret);
-					return -EFAULT;	
-				}
-				break;
-		
-	}
-	return 0;
-}
 static int adxl_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
 	int _reg_addr;
@@ -321,24 +287,30 @@ static struct i2c_driver adxl345_i2c_driver = {
 
 void i2c_do_tasklet(struct work_struct *work)
 {
-	unsigned char reg;
-	struct file *filp;
+	int ret;
+	char *buf = NULL;
+	/* read two bytes */
+	int count = 2; 
 	struct i2c_client *client = to_i2c_client(dev);
 
-	struct adxl345_dev *dev = filp->private_data;
-	reg = dev->client->addr;
-	i2c_smbus_read_byte_data(client, reg);
+	/* Read 2 bytes from i2c slave and store in buffer buf */
+	ret = i2c_master_recv(client, buf, count);
+	/* handle read failure */
+	if (ret < 0) {
+		pr_err("Read from i2c failed with error code %d\n", ret);		
+		return;
+	}
 }
 
 /* Interrupt Handling section */
 /* IRQ handler - fired on GPIO 17 interrupt- Falling Edge */
 static irqreturn_t r_irq_handler(int irq, void *dev_id, struct pt_regs *regs)
 {
-	unsigned long flags;
 
-	/* Schedule the Bottom Half */
+	/* Schedule the Bottom Half to be executed later */
 	schedule_work(&i2c_wq);
-
+	
+	/* Respond to the interrupt */
 	return IRQ_HANDLED;	
 }
 /* Module to configure interrupt */
